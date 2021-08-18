@@ -29,10 +29,14 @@ describe("ScopeGuard", async () => {
       refundReceiver: AddressZero,
       signatures: "0x",
     };
+    const dataHash = ethers.utils.keccak256(
+      "0x610b59250000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+    );
     return {
       safe,
       guard,
       tx,
+      dataHash,
     };
   });
 
@@ -144,7 +148,7 @@ describe("ScopeGuard", async () => {
     it("should revert if scoped and target function is not allowed", async () => {
       const { safe, guard, tx } = await setupTests();
       await guard.allowTarget(safe.address);
-      await guard.toggleScoped(safe.address);
+      await guard.toggleTargetScoped(safe.address);
       tx.data = "0x12345678";
       tx.operation = 0;
 
@@ -168,7 +172,7 @@ describe("ScopeGuard", async () => {
     it("should revert if scoped and no transaction data is disallowed", async () => {
       const { safe, guard, tx } = await setupTests();
       await guard.allowTarget(safe.address);
-      await guard.toggleScoped(safe.address);
+      await guard.toggleTargetScoped(safe.address);
       tx.data = "0x";
       tx.value = 1;
       await expect(
@@ -186,6 +190,32 @@ describe("ScopeGuard", async () => {
           user1.address
         )
       ).to.be.revertedWith("Cannot send to this address");
+    });
+
+    it("should revert if function scoped and parameters are not allowed", async () => {
+      const { safe, guard, tx } = await setupTests();
+      await guard.allowTarget(safe.address);
+      await guard.toggleTargetScoped(safe.address);
+      await guard.toggleFunctionScoped(safe.address, "0x12345678");
+      tx.data =
+        "0x123456780000000000000000000000000000000000000000000000000000000000000000";
+      tx.operation = 0;
+
+      await expect(
+        guard.checkTransaction(
+          tx.to,
+          tx.value,
+          tx.data,
+          tx.operation,
+          tx.safeTxGas,
+          tx.baseGas,
+          tx.gasPrice,
+          tx.gasToken,
+          tx.refundReceiver,
+          tx.signatures,
+          user1.address
+        )
+      ).to.be.revertedWith("Target function is not allowed");
     });
 
     it("it should be callable by a safe", async () => {
@@ -209,6 +239,70 @@ describe("ScopeGuard", async () => {
         )
       );
     });
+
+    it("it should be callable to a safe with function", async () => {
+      const { safe, guard, tx } = await setupTests();
+      await guard.allowTarget(safe.address);
+      await guard.toggleTargetScoped(safe.address);
+      // enableModule(address)
+      await guard.allowFunction(safe.address, "0x610b5925");
+      tx.operation = 0;
+      tx.to = safe.address;
+      tx.value = 0;
+      // enableModule("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
+      tx.data =
+        "0x610b59250000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+      await expect(
+        safe.execTransaction(
+          tx.to,
+          tx.value,
+          tx.data,
+          tx.operation,
+          tx.safeTxGas,
+          tx.baseGas,
+          tx.gasPrice,
+          tx.gasToken,
+          tx.refundReceiver,
+          tx.signatures
+        )
+      );
+      expect(await safe.module()).to.equal(
+        "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+      );
+    });
+
+    it("it should be callable to a safe with parameters", async () => {
+      const { safe, guard, tx, dataHash } = await setupTests();
+      await guard.allowTarget(safe.address);
+      await guard.toggleTargetScoped(safe.address);
+      await guard.toggleFunctionScoped(safe.address, "0x610b5925");
+      // enableModule(address)
+      await guard.allowFunction(safe.address, "0x610b5925");
+      await guard.allowParameters(safe.address, "0x610b5925", dataHash);
+      tx.operation = 0;
+      tx.to = safe.address;
+      tx.value = 0;
+      // enableModule("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc")
+      tx.data =
+        "0x610b59250000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+      await expect(
+        safe.execTransaction(
+          tx.to,
+          tx.value,
+          tx.data,
+          tx.operation,
+          tx.safeTxGas,
+          tx.baseGas,
+          tx.gasPrice,
+          tx.gasToken,
+          tx.refundReceiver,
+          tx.signatures
+        )
+      );
+      expect(await safe.module()).to.equal(
+        "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+      );
+    });
   });
 
   describe("allowTarget", async () => {
@@ -219,7 +313,7 @@ describe("ScopeGuard", async () => {
       ).to.be.revertedWith("caller is not the owner");
     });
 
-    it("should allowe a target", async () => {
+    it("should allow a target", async () => {
       const { safe, guard } = await setupTests();
       await expect(await guard.isAllowedTarget(guard.address)).to.be.equals(
         false
@@ -238,7 +332,7 @@ describe("ScopeGuard", async () => {
     });
   });
 
-  describe("disalowTarget", async () => {
+  describe("disallowTarget", async () => {
     it("should revert if caller is not owner", async () => {
       const { guard } = await setupTests();
       await expect(
@@ -379,28 +473,129 @@ describe("ScopeGuard", async () => {
     });
   });
 
+  describe("allowParameters", async () => {
+    it("should revert if caller is not owner", async () => {
+      const { guard, dataHash } = await setupTests();
+      await expect(
+        guard
+          .connect(user2)
+          .allowParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.revertedWith("caller is not the owner");
+    });
+
+    it("should allow parameters for a function", async () => {
+      const { guard, dataHash } = await setupTests();
+      await expect(
+        await guard.isAllowedParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.equals(false);
+      await expect(
+        guard.allowParameters(guard.address, "0x12345678", dataHash)
+      );
+      await expect(
+        await guard.isAllowedParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.equals(true);
+    });
+
+    it("should emit ParameterAllowedOnFunction(target, functionSig, dataHash)", async () => {
+      const { safe, guard, dataHash } = await setupTests();
+      await expect(guard.allowParameters(safe.address, "0x12345678", dataHash))
+        .to.emit(guard, "ParameterAllowedOnFunction")
+        .withArgs(safe.address, "0x12345678", dataHash);
+    });
+  });
+
+  describe("disallowParameters", async () => {
+    it("should revert if caller is not owner", async () => {
+      const { guard, dataHash } = await setupTests();
+      await expect(
+        guard
+          .connect(user2)
+          .disallowParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.revertedWith("caller is not the owner");
+    });
+
+    it("should disallow parameters for a function", async () => {
+      const { guard, dataHash } = await setupTests();
+      await guard.allowParameters(guard.address, "0x12345678", dataHash);
+      await expect(
+        await guard.isAllowedParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.equals(true);
+      await expect(
+        guard.disallowParameters(guard.address, "0x12345678", dataHash)
+      );
+      await expect(
+        await guard.isAllowedParameters(guard.address, "0x12345678", dataHash)
+      ).to.be.equals(false);
+    });
+
+    it("should emit ParameterDisallowedOnFunction(target, functionSig, dataHash)", async () => {
+      const { safe, guard, dataHash } = await setupTests();
+      await guard.allowParameters(safe.address, "0x12345678", dataHash);
+      await expect(
+        guard.disallowParameters(safe.address, "0x12345678", dataHash)
+      )
+        .to.emit(guard, "ParameterDisallowedOnFunction")
+        .withArgs(safe.address, "0x12345678", dataHash);
+    });
+  });
+
   describe("setScope", async () => {
     it("should revert if caller is not owner", async () => {
       const { guard } = await setupTests();
       await expect(
-        guard.connect(user2).toggleScoped(guard.address)
+        guard.connect(user2).toggleTargetScoped(guard.address)
       ).to.be.revertedWith("caller is not the owner");
     });
 
     it("should set scoped for a target", async () => {
       const { guard } = await setupTests();
 
-      await expect(await guard.isScoped(guard.address)).to.be.equals(false);
-      await expect(await guard.toggleScoped(guard.address));
-      await expect(await guard.isScoped(guard.address)).to.be.equals(true);
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        false
+      );
+      await expect(await guard.toggleTargetScoped(guard.address));
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        true
+      );
     });
 
     it("should emit TargetScoped(target, scoped)", async () => {
       const { safe, guard } = await setupTests();
 
-      await expect(guard.toggleScoped(safe.address))
+      await expect(guard.toggleTargetScoped(safe.address))
         .to.emit(guard, "TargetScoped")
         .withArgs(safe.address, true);
+    });
+  });
+
+  describe("setFunctionScope", async () => {
+    it("should revert if caller is not owner", async () => {
+      const { guard } = await setupTests();
+      await expect(
+        guard.connect(user2).toggleFunctionScoped(guard.address, "0x12345678")
+      ).to.be.revertedWith("caller is not the owner");
+    });
+
+    it("should set scoped for a function", async () => {
+      const { guard } = await setupTests();
+
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(false);
+      await expect(
+        await guard.toggleFunctionScoped(guard.address, "0x12345678")
+      );
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(true);
+    });
+
+    it("should emit FunctionScoped(target, functionSig, scoped)", async () => {
+      const { safe, guard } = await setupTests();
+
+      await expect(guard.toggleFunctionScoped(safe.address, "0x12345678"))
+        .to.emit(guard, "FunctionScoped")
+        .withArgs(safe.address, "0x12345678", true);
     });
   });
 
@@ -426,27 +621,79 @@ describe("ScopeGuard", async () => {
     });
   });
 
-  describe("isScoped", async () => {
+  describe("isTargetScoped", async () => {
     it("should return false if not set", async () => {
       const { safe, guard } = await setupTests();
 
-      await expect(await guard.isScoped(guard.address)).to.be.equals(false);
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        false
+      );
     });
 
     it("should return false if set to false", async () => {
       const { guard } = await setupTests();
 
-      await expect(await guard.isScoped(guard.address)).to.be.equals(false);
-      await expect(guard.toggleScoped(guard.address));
-      await expect(await guard.isScoped(guard.address)).to.be.equals(true);
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        false
+      );
+      await expect(guard.toggleTargetScoped(guard.address));
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        true
+      );
+      await expect(guard.toggleTargetScoped(guard.address));
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        false
+      );
     });
 
     it("should return true if set to true", async () => {
       const { guard } = await setupTests();
 
-      await expect(await guard.isScoped(guard.address)).to.be.equals(false);
-      await expect(guard.toggleScoped(guard.address));
-      await expect(await guard.isScoped(guard.address)).to.be.equals(true);
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        false
+      );
+      await expect(guard.toggleTargetScoped(guard.address));
+      await expect(await guard.isTargetScoped(guard.address)).to.be.equals(
+        true
+      );
+    });
+  });
+
+  describe("isFunctionScoped", async () => {
+    it("should return false if not set", async () => {
+      const { safe, guard } = await setupTests();
+
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(false);
+    });
+
+    it("should return false if set to false", async () => {
+      const { guard } = await setupTests();
+
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(false);
+      await expect(guard.toggleFunctionScoped(guard.address, "0x12345678"));
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(true);
+      await expect(guard.toggleFunctionScoped(guard.address, "0x12345678"));
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(false);
+    });
+
+    it("should return true if set to true", async () => {
+      const { guard } = await setupTests();
+
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(false);
+      await expect(guard.toggleFunctionScoped(guard.address, "0x12345678"));
+      await expect(
+        await guard.isFunctionScoped(guard.address, "0x12345678")
+      ).to.be.equals(true);
     });
   });
 
@@ -468,6 +715,28 @@ describe("ScopeGuard", async () => {
       await expect(guard.allowFunction(safe.address, "0x12345678"));
       await expect(
         await guard.isAllowedFunction(safe.address, "0x12345678")
+      ).to.be.equals(true);
+    });
+  });
+
+  describe("isAllowedParameters", async () => {
+    it("should return false if not set", async () => {
+      const { safe, guard, dataHash } = await setupTests();
+
+      await expect(
+        await guard.isAllowedParameters(safe.address, "0x12345678", dataHash)
+      ).to.be.equals(false);
+    });
+
+    it("should return true if parameters are allowed", async () => {
+      const { safe, guard, dataHash } = await setupTests();
+
+      await expect(
+        await guard.isAllowedParameters(safe.address, "0x12345678", dataHash)
+      ).to.be.equals(false);
+      await expect(guard.allowParameters(safe.address, "0x12345678", dataHash));
+      await expect(
+        await guard.isAllowedParameters(safe.address, "0x12345678", dataHash)
       ).to.be.equals(true);
     });
   });
